@@ -3,6 +3,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from sklearn.model_selection import train_test_split
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.model_selection import KFold, cross_val_predict
 from sklearn.metrics import r2_score
@@ -32,7 +33,7 @@ def bo_lstm_hyperparams(dataset, num_epochs, bo_iteration_number=15, display_fla
     use_attention = [True, False]  # Attention層を使うかどうかを選択 (True or False)
         
     # 実験計画法の条件
-    doe_number_of_selecting_samples = 15  # 選択するサンプル数
+    doe_number_of_selecting_samples = 3  # 選択するサンプル数
     doe_number_of_random_searches = 100  # ランダムにサンプルを選択して D 最適基準を計算する繰り返し回数
     # BOの設定
     bo_iterations = np.arange(0, bo_iteration_number + 1)
@@ -150,13 +151,21 @@ def bo_lstm_hyperparams(dataset, num_epochs, bo_iteration_number=15, display_fla
 
             #window_sizeごとにデータを区切ります
             input_sequences, target_sequences = create_sequences(inputs, targets, selected_seq_length)
+            
+            #訓練用データと検証用データに分けます
+            X_train, X_val, y_train, y_val = train_test_split(input_sequences, target_sequences, test_size=0.3, shuffle=False)
 
-            inputs_tensor = torch.tensor(input_sequences).float()
-            targets_tensor = torch.tensor(target_sequences).float().unsqueeze(1)
+            train_inputs_tensor = torch.tensor(X_train).float()
+            val_inputs_tensor = torch.tensor(X_val).float()
+            
+            train_targets_tensor = torch.tensor(y_train).float().unsqueeze(1)
+            val_targets_tensor = torch.tensor(y_val).float().unsqueeze(1)
 
-            dataset_tensor = TensorDataset(inputs_tensor, targets_tensor)
+            train_dataset_tensor = TensorDataset(train_inputs_tensor, train_targets_tensor)
+            val_dataset_tensor = TensorDataset(val_inputs_tensor, val_targets_tensor)
 
-            train_loader = DataLoader(dataset_tensor, batch_size=int(selected_batch_size), shuffle=False)
+            train_loader = DataLoader(train_dataset_tensor, batch_size=int(selected_batch_size), shuffle=False)
+            val_loader = DataLoader(train_dataset_tensor, batch_size=int(selected_batch_size), shuffle=False)
             
             model = LSTMWithOptionalAttention(input_dim, int(selected_hidden_dim), output_dim, 
                                               selected_attention, selected_dropout_late)
@@ -171,9 +180,10 @@ def bo_lstm_hyperparams(dataset, num_epochs, bo_iteration_number=15, display_fla
             optimizer = optim.Adam(model.parameters(), lr=selected_lr)
             
             
-            train_r2_scores = []
+            #train_r2_scores = []
             train_losses = []
-
+            
+            # 訓練用コード
             for epoch in range(num_epochs):
                 model.train()
                 epoch_loss = 0
@@ -196,15 +206,47 @@ def bo_lstm_hyperparams(dataset, num_epochs, bo_iteration_number=15, display_fla
                     all_train_predictions.extend(outputs.detach().cpu().numpy().flatten())
                     all_true_train_targets.extend(targets.detach().cpu().numpy().flatten())
 
-                avg_loss = epoch_loss / len(dataset_tensor)
+                avg_loss = epoch_loss / len(train_dataset_tensor)
                 train_losses.append(avg_loss)
 
                 # 訓練データ全体のR2スコアを計算
-                train_r2 = r2_score(all_true_train_targets, all_train_predictions)
+                #train_r2 = r2_score(all_true_train_targets, all_train_predictions)
                 #train_r2 = r2lm(all_true_train_targets, all_train_predictions)
-                train_r2_scores.append(train_r2)
+                #train_r2_scores.append(train_r2)
+            
+            # 検証用
+            model.eval()
+            val_loss = 0
+            val_r2_scores = []
+            all_val_predictions = []
+            all_true_val_targets = []
+            all_attention_weights = []
+
+            with torch.no_grad():
+                for inputs, targets in val_loader:
+                    inputs = inputs.to(device)
+                    targets = targets.to(device)
+
+                    outputs, attention_weights = model(inputs)
+                    loss = criterion(outputs, targets)
+                    val_loss += loss.item() * inputs.size(0)
+
+                    all_val_predictions.extend(outputs.cpu().numpy().flatten())
+                    all_true_val_targets.extend(targets.cpu().numpy().flatten())
+                    if model.use_attention: # モデルのインスタンス変数use_attentionを参照
+                        if attention_weights is not None: # attention_weightsがNoneでないことを確認
+                            all_attention_weights.extend(attention_weights.cpu().numpy())
+
+            average_test_loss = val_loss / len(val_dataset_tensor)
+            val_r2 = r2_score(all_true_val_targets, all_val_predictions)
+
+            # 訓練データ全体のR2スコアを計算
+            #train_r2 = r2lm(all_true_train_targets, all_train_predictions)
+            val_r2_scores.append(val_r2)
+            
+            
                 
-            current_r2 = train_r2_scores[-1]
+            current_r2 = val_r2_scores[-1]
             params_with_score_df.loc[selected_params_idx, 'score'] = current_r2 # データの保存
             all_r2_scores.append(current_r2)
             trial_numbers.append(bo_iter if bo_iter > 0 else f'D-Opt {i_n+1}')
@@ -336,20 +378,23 @@ def bo_lstm_hyperparams(dataset, num_epochs, bo_iteration_number=15, display_fla
     model = LSTMWithOptionalAttention(input_dim, optimal_hidden_dim, output_dim, 
                                               optimal_attention, optimal_dropout_rate)
     
+    # ベイズ最適化の過程を描画します
     if bo_iteration_plot:
         plt.figure(figsize=(10, 6))
-        num_initial_samples = initial_sample_count
-        bo_start_index = num_initial_samples
 
-        initial_r2 = all_r2_scores[:num_initial_samples]
-        bo_r2 = all_r2_scores[num_initial_samples:]
-        initial_trials = np.arange(1, num_initial_samples + 1)
-        bo_trials = np.arange(num_initial_samples + 1, len(all_r2_scores) + 1)
-
-        plt.plot(initial_trials, initial_r2, marker='o', linestyle='-', color='blue', label='Initial (D-Optimal)')
+        initial_r2 = all_r2_scores[:doe_number_of_selecting_samples]
+        bo_r2 = all_r2_scores[doe_number_of_selecting_samples -1:] 
+        initial_trials = np.arange(1, doe_number_of_selecting_samples + 1)
+        # ベイズ最適化の試行回数をD最適化の最後に接続するように修正
+        bo_trials = np.arange(doe_number_of_selecting_samples, len(all_r2_scores) +1)
+        # D最適化によるサンプリングの表示
+        plt.plot(initial_trials, initial_r2, marker='o', linestyle='-', color='blue', label='D-Optimal')
+        # ベイズ最適化によるサンプリングの表示
         plt.plot(bo_trials, bo_r2, marker='o', linestyle='-', color='green', label='Bayesian Optimization')
-        if bo_start_index > 0:
-            plt.axvline(x=bo_start_index + 0.5, color='red', linestyle='--', label='Start of BO')
+
+        # D最適化とベイズ最適化との境界線を表示
+        plt.axvline(x=doe_number_of_selecting_samples, color='red', linestyle='--', label='Start of Bayesian Optimization')
+
         plt.xlabel('Trial Number')
         plt.ylabel('R2 Score')
         plt.title('Bayesian Optimization Progress')
