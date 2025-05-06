@@ -18,6 +18,19 @@ import matplotlib.pyplot as plt
 from LSTMwithAttention import LSTMWithOptionalAttention, Attention
 
 def bo_lstm_hyperparams(dataset, num_epochs, bo_iteration_number=15, display_flag=False, bo_iteration_plot=False):
+    """
+    LSTMモデルのハイパーパラメータ、ベイズ最適化を用いてチューニングする関数
+    
+    Args:
+        dataset (pd.DataFrame): 入力用の時系列データセット。1列目が目的変数、それ以降が説明変数での入力を想定している。
+        num_epochs (int): LSTMモデルにおけるエポック数。
+        bo_iteration_number (int): ベイズ最適化の試行回数。デフォルトは15。
+        display_flag (bool): ベイズ最適化の途中経過を表示するか。デフォルトはFalse。
+        bo_iteration_flag (bool): ベイズ最適化の過程をグラフ表示するか。デフォルトはFalse。
+        
+    Return:
+        taple: 最適化されたLSTM、窓枠サイズ, バッチサイズ、学習率のタプル。
+    """
     
     #固定のパラメータ
     #入力次元
@@ -29,14 +42,15 @@ def bo_lstm_hyperparams(dataset, num_epochs, bo_iteration_number=15, display_fla
     # ハイパーパラメータの探索候補
     seq_length = [10, 50, 100, 300] #sliding_windowのサイズ
     hidden_dim = [2, 4, 8, 16, 32] #隠れ層の数(小さめに設定)
-    batch_size = [4, 8, 16, 32]
-    lr= [1e-5, 1e-4, 1e-3, 1e-2] 
-    dropout_rate = [0.2, 0.3, 0.4, 0.5]
+    batch_size = [4, 8, 16, 32] #バッチサイズ
+    lr= [1e-5, 1e-4, 1e-3, 1e-2] #学習率
+    dropout_rate = [0.2, 0.3, 0.4, 0.5] #ドロップアウト率
     use_attention = [True, False]  # Attention層を使うかどうかを選択 (True or False)
         
     # 実験計画法の条件
     doe_number_of_selecting_samples = 3  # 選択するサンプル数
     doe_number_of_random_searches = 100  # ランダムにサンプルを選択して D 最適基準を計算する繰り返し回数
+    
     # BOの設定
     bo_iterations = np.arange(0, bo_iteration_number + 1)
     bo_gp_fold_number = 5 # BOのGPを構築するためのcvfold数
@@ -44,13 +58,12 @@ def bo_lstm_hyperparams(dataset, num_epochs, bo_iteration_number=15, display_fla
     #bo_regression_method = 'gpr_kernels'  # gpr_one_kernel', 'gpr_kernels'
     bo_regression_method = 'gpr_one_kernel'  # gpr_one_kernel', 'gpr_kernels'
     bo_kernel_number = 2  # 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
-    #acquisition_function = 'PTR'  # 'PTR', 'PI', 'EI', 'MI'
     acquisition_functions = ['PTR', 'PI', 'EI', 'MI']
     target_range = [1, 100]  # PTR
     relaxation = 0.01  # EI, PI
     delta = 10 ** -6  # MI
     
-    # 解空間の作成
+    # ハイパーパラメータの探索空間の作成
     parameter_candidates = []
     for window_size in seq_length:
         for hidden in hidden_dim:
@@ -168,22 +181,17 @@ def bo_lstm_hyperparams(dataset, num_epochs, bo_iteration_number=15, display_fla
             val_dataset_tensor = TensorDataset(val_inputs_tensor, val_targets_tensor)
 
             train_loader = DataLoader(train_dataset_tensor, batch_size=int(selected_batch_size), shuffle=False)
-            val_loader = DataLoader(train_dataset_tensor, batch_size=int(selected_batch_size), shuffle=False)
+            val_loader = DataLoader(val_dataset_tensor, batch_size=int(selected_batch_size), shuffle=False)
             
             model = LSTMWithOptionalAttention(input_dim, int(selected_hidden_dim), output_dim, 
                                               selected_attention, selected_dropout_late)
 
-            # -------------------------------
-            # 学習準備（変更なし）
-            # -------------------------------
+            # 学習準備
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             model.to(device)
 
             criterion = nn.MSELoss()
             optimizer = optim.Adam(model.parameters(), lr=selected_lr)
-            
-            
-            #train_r2_scores = []
             train_losses = []
             
             # 訓練用コード
@@ -211,11 +219,6 @@ def bo_lstm_hyperparams(dataset, num_epochs, bo_iteration_number=15, display_fla
 
                 avg_loss = epoch_loss / len(train_dataset_tensor)
                 train_losses.append(avg_loss)
-
-                # 訓練データ全体のR2スコアを計算
-                #train_r2 = r2_score(all_true_train_targets, all_train_predictions)
-                #train_r2 = r2lm(all_true_train_targets, all_train_predictions)
-                #train_r2_scores.append(train_r2)
             
             # 検証用
             model.eval()
@@ -320,8 +323,8 @@ def bo_lstm_hyperparams(dataset, num_epochs, bo_iteration_number=15, display_fla
             
             cumulative_variance = np.zeros(bo_x_prediction.shape[0])
             
-            # 獲得関数の決定(4で割ったときの余りで獲得関数を選択します)
-            selected_aquisition_function_number  = bo_iter % 4
+            # 獲得関数の決定(今回のプログラムでは獲得関数を試行ごとに変更して使用します)
+            selected_aquisition_function_number  = bo_iter % len(acquisition_functions)
             acquisition_function = acquisition_functions[selected_aquisition_function_number]
             
             # 獲得関数の計算
@@ -380,10 +383,6 @@ def bo_lstm_hyperparams(dataset, num_epochs, bo_iteration_number=15, display_fla
     else:
         optimal_attention = False
     
-    """
-    input_dimが変わらないのであれば、最適化したmodelをreturn
-    最適化しないのであれば、最適値をリターン
-    """
     model = LSTMWithOptionalAttention(input_dim, optimal_hidden_dim, output_dim, 
                                               optimal_attention, optimal_dropout_rate)
     
