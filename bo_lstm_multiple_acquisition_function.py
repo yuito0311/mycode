@@ -58,7 +58,8 @@ def bo_lstm_hyperparams(dataset, num_epochs, bo_iteration_number=15, display_fla
     # bo_regression_method = 'gpr_kernels'  # gpr_one_kernel', 'gpr_kernels'
     bo_regression_method = 'gpr_one_kernel'  # gpr_one_kernel', 'gpr_kernels'
     bo_kernel_number = 2   # 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
-    acquisition_functions = ['PTR', 'PI', 'EI', 'MI']
+    #acquisition_functions = ['PTR', 'PI', 'EI', 'MI']
+    acquisition_functions = ['PI', 'EI']
     target_range = [1, 100]   # PTR
     relaxation = 0.01  # EI, PI
     delta = 10 ** -6  # MI
@@ -263,7 +264,8 @@ def bo_lstm_hyperparams(dataset, num_epochs, bo_iteration_number=15, display_fla
 
                 all_val_predictions_original_scale = (np.array(all_val_predictions) * y_train_std) + y_train_mean
                 all_true_val_targets_original_scale = (np.array(all_true_val_targets) * y_train_std) + y_train_mean
-                val_r2 = r2_score(all_true_val_targets_original_scale, all_val_predictions_original_scale)
+                #val_r2 = r2_score(all_true_val_targets_original_scale, all_val_predictions_original_scale)
+                val_r2 = r2lm(all_true_val_targets_original_scale, all_val_predictions_original_scale)
                 val_r2_scores.append(val_r2)
 
             current_r2 = val_r2_scores[-1]
